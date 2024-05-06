@@ -17,7 +17,11 @@
       {
         "command": "duplicant.showheatmap",
         "title": "Show Duplicant Heatmap"
-      }
+      },
+	  {
+		"command": "duplicant.jumpto",
+		"title": "Jump to File/Line"
+	  }
     ]
   },
   "scripts": {
@@ -26,7 +30,8 @@
     "watch": "webpack --watch",
     "package": "rm -rf dist && webpack --mode production --devtool hidden-source-map",
     "lint": "eslint src --ext ts",
-	"vsix": "vsce package --no-dependencies -o dist/"
+    "vsix": "vsce package --no-dependencies -o dist/",
+    "format": "prettier --write src/*.ts src/**/*.ts"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.6",
@@ -36,6 +41,7 @@
     "@typescript-eslint/parser": "^7.7.1",
     "@vscode/vsce": "^2.26.1",
     "eslint": "^8.57.0",
+    "prettier": "^3.2.5",
     "ts-loader": "^9.5.1",
     "typescript": "^5.4.5",
     "webpack": "^5.91.0",

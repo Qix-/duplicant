@@ -12,6 +12,7 @@ clap = { version = "4.5.4", features = ["derive"] }
 crossbeam-channel = "0.5.12"
 glob = "0.3.1"
 humantime = "2.1.0"
+indexmap = "2.2.6"
 num_cpus = "1.16.0"
 sha1 = "0.10.6"
 spin = { version = "0.9.8", features = ["lock_api", "lock_api_crate", "spin_mutex", "std"], default-features = false }

@@ -6,6 +6,7 @@
 use byteorder::{LittleEndian, WriteBytesExt};
 use clap::Parser;
 use crossbeam_channel::{Receiver, Sender};
+use indexmap::IndexMap;
 use sha1::{Digest, Sha1};
 use spin::mutex::SpinMutex;
 #[cfg(unix)]
@@ -13,7 +14,7 @@ use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 use std::{
-	collections::{HashMap, HashSet},
+	collections::HashSet,
 	io::{BufRead, BufReader, Write},
 	path::PathBuf,
 	sync::{
@@ -47,22 +48,22 @@ struct Options {
 	#[clap(short = 't', long = "threshold", default_value = "0.97")]
 	threshold: f64,
 
-	/// Minimum number of lines that constitute a block
-	#[clap(short = 'l', long = "lines", default_value = "3")]
-	lines: usize,
-
 	/// Keep whitespace when comparing lines (default is to ignore)
 	#[clap(short = 'w', long = "keep-ws")]
 	keep_ws: bool,
 
 	/// Minimum line length (after any whitespace removal) to consider
-	/// when comparing blocks (default is 0)
+	/// when finding similarities
 	#[clap(short = 'm', long = "min", default_value = "10")]
 	min_length: usize,
 
 	/// Number of threads to use (default is number of CPUs)
 	#[clap(short = 'n', long = "threads")]
 	threads: Option<usize>,
+
+	/// Show verbose path discovery information
+	#[clap(short = 'v', long = "verbose")]
+	verbose: bool,
 }
 
 enum WorkerMessage {
@@ -261,6 +262,10 @@ fn main() {
 				continue;
 			}
 
+			if options.verbose {
+				eprintln!("processing {path:?}");
+			}
+
 			files.push(path);
 		}
 	}
@@ -419,7 +424,7 @@ fn main() {
 	// Construct a map of paths to their lines, filtering out
 	// lines with no similarities.
 	// We also keep track of the maximum number of similarities.
-	let mut path_map = HashMap::new();
+	let mut path_map = IndexMap::new();
 	let mut max_similarities = 0;
 	for line in corpus.iter() {
 		let similarities = line.similarities.lock().len();
@@ -455,15 +460,16 @@ fn main() {
 	//
 	// Section Types:
 	//
-	//   PATHS: [(sha1: [u8; 20], line_count: u32, lines_offset: u64); #PATHS]
+	//   PATHS: [(sha1: [u8; 20], line_count: u32, lines_offset: u64, name_offset: u64); #PATHS]
 	//   LINES: [(line_no: u32, similarity_count: u32, similarities_offset: u64); line_count]
-	//   SIMILARITIES: (path_offset: u64, line_number: u32)
+	//   SIMILARITIES: [(path_offset: u64, line_number: u32); similarity_count]
+	//   PATH_NAMES: [path: utf-8 string, NUL terminated; #PATHS]
 
 	const MAGIC: u32 = 0x4C505544;
 
 	// Calculate the size of each type
 	const HEADER_SIZE: usize = 4 + 4 + 8 + 8;
-	const PATH_SIZE: usize = 20 + 4 + 8;
+	const PATH_SIZE: usize = 20 + 4 + 8 + 8;
 	const LINE_SIZE: usize = 4 + 4 + 8;
 	const SIMILARITY_SIZE: usize = 8 + 4;
 
@@ -473,17 +479,35 @@ fn main() {
 		.values()
 		.map(|lines| LINE_SIZE * lines.len())
 		.sum::<usize>();
+	let similarities_size = path_map
+		.values()
+		.map(|lines| {
+			lines
+				.iter()
+				.map(|line| SIMILARITY_SIZE * line.similarities.lock().len())
+				.sum::<usize>()
+		})
+		.sum::<usize>();
 
 	let paths_offset = HEADER_SIZE;
 	let lines_offset = paths_offset + paths_size;
 	let similarities_offset = lines_offset + lines_size;
+	let path_names_offset = similarities_offset + similarities_size;
 
 	// Make a reverse map of paths to their index
 	let path_index_map = path_map
 		.keys()
 		.enumerate()
 		.map(|(i, path)| (*path, i))
-		.collect::<HashMap<_, _>>();
+		.collect::<IndexMap<_, _>>();
+
+	// Make a map of paths to their path name offset
+	let mut path_name_offsets = IndexMap::new();
+	let mut current_path_name_offset = path_names_offset;
+	for path in path_index_map.keys() {
+		path_name_offsets.insert(*path, current_path_name_offset);
+		current_path_name_offset += path.to_string_lossy().len() + 1;
+	}
 
 	let res = move || -> Result<(), std::io::Error> {
 		outstream.write_u32::<LittleEndian>(MAGIC)?;
@@ -501,6 +525,7 @@ fn main() {
 			outstream.write_all(&sha1)?;
 			outstream.write_u32::<LittleEndian>(lines.len() as u32)?;
 			outstream.write_u64::<LittleEndian>(current_lines_offset as u64)?;
+			outstream.write_u64::<LittleEndian>(path_name_offsets[path] as u64)?;
 
 			current_lines_offset += LINE_SIZE * lines.len();
 		}
@@ -523,9 +548,14 @@ fn main() {
 						((path_index_map.get(&corpus[*similarity].filepath).unwrap() * PATH_SIZE)
 							+ paths_offset) as u64,
 					)?;
-					outstream.write_u32::<LittleEndian>(*similarity as u32)?;
+					outstream.write_u32::<LittleEndian>(corpus[*similarity].line_no as u32)?;
 				}
 			}
+		}
+
+		for path in path_index_map.keys() {
+			outstream.write_all(path.to_string_lossy().as_bytes())?;
+			outstream.write_u8(0)?;
 		}
 
 		Ok(())
